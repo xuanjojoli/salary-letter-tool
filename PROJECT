@@ -1,1 +1,457 @@
 
+# 批量信件生成工具（Salary Letter Tool）· 项目主文档
+
+> 本文件是项目**唯一权威主文档**：涵盖背景、架构、代码结构、数据约定、打包分发、已知问题与迭代方向。后续开发请先读本文，再改代码；任何影响结构/约定/接口的改动，请同步更新本文对应章节与文末「变更记录」。
+
+| 项 | 值 |
+|---|---|
+| 项目名 | 批量信件生成工具 / Salary Letter Tool |
+| 维护方 | HR SSC（CTG-HRSSC） |
+| 当前版本 | **1.0.1**（2026-09-08） |
+| 主程序 | `salary_tool.py`（单文件，含 GUI + 全部业务逻辑） |
+| 定位 | 一键把 Excel 员工数据按 Word 模板批量生成 PDF 信件 |
+
+---
+
+## 1. 项目概述
+
+### 1.1 解决什么问题
+
+调薪季/晋升季/录用季，HR 需要对照 Excel 逐人复制到 Word 模板、改字段、再「另存为」成 PDF。上百人时耗时长、易抄错、模板易配错、文件名易乱。
+
+### 1.2 这个工具做什么
+
+给定「1 份 Excel 数据源」+「1 个 Word 模板文件夹」，全自动完成：
+
+1. 读取 Excel（第一行表头，之后每行一名员工）；
+2. 按「模板编号」列给每人匹配对应 `.docx` 模板；
+3. 把该行所有字段填入模板的 `{{字段名}}` 占位符；
+4. 每人导出一份 PDF，按可配置的命名规则命名；
+5. 全部 PDF 输出到同一文件夹。
+
+### 1.3 核心特性
+
+- **零代码使用**：纯 tkinter 图形界面，点选文件即可。
+- **免安装分发**：PyInstaller 打包成绿色单文件夹（exe + `_internal`），同事无需装 Python，只需本机有 MS Office Word。
+- **多场景复用**：调薪信 / 晋升信 / 录用信等，用「场景」配置（JSON）一键切换，无需改代码。
+- **容错**：跳过空行；缺模板/缺字段/重名提前在「预览校验」提示；单行失败不影响其余。
+
+### 1.4 核心外部依赖（必须理解）
+
+- **Microsoft Office Word（桌面版）**：转 PDF 完全依赖 Word 的 COM 自动化。**没有 Word 就生成不了 PDF**（这是硬前提，也是唯一的外部运行时依赖）。
+- **Python 3.11+**（仅开发/打包机需要，最终用户不需要）。
+
+---
+
+## 2. 技术栈与环境
+
+| 类别 | 内容 |
+|---|---|
+| 语言 | Python 3.11+ |
+| GUI | tkinter（标准库）+ ttk |
+| Word 渲染 | `docxtpl`（基于 jinja2）+ `python-docx` |
+| Excel 读取 | `openpyxl` |
+| Word→PDF | `pywin32`（win32com，调 Word COM 自动化） |
+| 打包 | `PyInstaller`（6.x，`--onedir` 模式） |
+
+依赖清单（`requirements.txt`）：
+
+```
+docxtpl>=0.16
+python-docx>=1.1
+openpyxl>=3.1
+pywin32>=306
+```
+
+> 说明：`docxtpl` 会自动带上 `python-docx` 和 `jinja2`；`pywin32` 仅 Windows 下可用（本项目就是 Windows 专属）。
+
+---
+
+## 3. 目录结构
+
+```
+salary-letter-tool/
+├── salary_tool.py            # ★ 主程序：全部业务逻辑 + GUI（单文件，约 850 行）
+├── make_sample.py            # 生成示例数据源 + 示例模板（快速自测用）
+├── make_icon.py              # 生成 app.ico 图标（占位 "SSC" 蓝底，可换公司 logo）
+├── requirements.txt          # Python 依赖
+├── build_exe.bat             # 一键打包脚本
+├── SalaryLetterTool.spec     # PyInstaller spec（build_exe.bat 实际用的是命令行参数，非此 spec）
+├── version_info.txt          # exe 版本资源（右键 exe → 属性可见）
+├── app.ico                   # 程序图标
+├── README.md                 # 面向使用者的说明（含常见问题表）
+├── PROJECT.md                # ★ 本文档（项目主文档）
+├── 使用说明.txt              # 开发机上的简短备忘（内容较少）
+├── 推广介绍.md               # 面向 HR 的宣传文案（含口播版）
+├── sample_data.xlsx          # 示例 Excel 数据源（由 make_sample.py 生成）
+├── sample_templates/         # 示例模板 模板1~3.docx
+├── sample_templates2/        # 早期样例：1.docx + 2/3/4.doc（.doc 会被工具忽略，见 §12）
+├── sample_output/            # 历史输出示例 PDF（含 E12345_张三… 等测试产物）
+├── configs/                  # 场景配置（每个 .json 一个场景；仅开发机有，不入 zip）
+│   ├── 新场景.json
+│   └── 外派人员调薪信.json
+├── dist/                     # PyInstaller 打包产物
+│   └── SalaryLetterTool/     # 打包后的绿色文件夹（exe + _internal + 使用说明.txt）
+├── build/                    # PyInstaller 中间产物（可删，重新打包会重建）
+├── SalaryLetterTool_v1.0.0_便携版/          # 手工组装的「便携版」分发目录
+│   ├── SalaryLetterTool/                     # = dist/SalaryLetterTool 的拷贝（app 本体）
+│   ├── 2026外派调薪信_测试演示版本/          # 场景：模板 + 数据源 + 输出
+│   ├── 2026外派调薪信_生成版本1.0/
+│   └── 2026外派调薪信_生成版本2.0/
+└── SalaryLetterTool_v1.0.0_便携版.zip        # ★ 对外分发的压缩包（仅含 app 本体，见 §13）
+```
+
+> 关于命名：`SalaryLetterTool_v1.0.0_便携版` 里的 `v1.0.0` 是历史目录名，当前已是 1.0.1；目录名未改，仅版本号资源与说明文件已升到 1.0.1。
+
+---
+
+## 4. 快速上手
+
+### 4.1 开发运行
+
+```bash
+pip install -r requirements.txt
+python salary_tool.py          # 打开 GUI
+```
+
+### 4.2 快速自测（生成示例后跑通全流程）
+
+```bash
+python make_sample.py          # 生成 sample_data.xlsx + sample_templates/模板1~3.docx
+python salary_tool.py          # Excel 选 sample_data.xlsx，模板选 sample_templates，输出任选空目录
+```
+
+### 4.3 打包成 exe
+
+双击 `build_exe.bat`，或手动执行（等价）：
+
+```bash
+python -m pip install --disable-pip-version-check pyinstaller
+python -m PyInstaller --noconfirm --clean --onedir --windowed \
+    --name "SalaryLetterTool" --icon "app.ico" \
+    --version-file "version_info.txt" \
+    --hidden-import "win32timezone" salary_tool.py
+```
+
+产物在 `dist/SalaryLetterTool/`（`SalaryLetterTool.exe` + `_internal/`）。
+
+### 4.4 组装「便携版」并压缩（对外分发）
+
+1. 打包后，把 `dist/SalaryLetterTool/` 里内容作为 app 本体；
+2. 补上 `使用说明.txt`（同事版，见 §13）；
+3. 压缩时**顶层目录名保持 `SalaryLetterTool/`**，且**只含 app 本体**（不含场景文件夹、不含 `configs/`）：
+   ```python
+   shutil.make_archive('SalaryLetterTool_v1.0.0_便携版', 'zip',
+                       root_dir='dist', base_dir='SalaryLetterTool')
+   ```
+
+---
+
+## 5. 核心架构与模块详解（salary_tool.py）
+
+主程序是**单文件**，按「工具函数 → 数据读取 → 模板匹配 → 文件名 → 核心流程 → GUI」顺序组织。下面按职责分组，行号对应当前 1.0.1 源码。
+
+### 5.1 常量与开关
+
+| 位置 | 内容 |
+|---|---|
+| `WD_FORMAT_PDF = 17` | Word 的 `wdFormatPDF` / `wdExportFormatPDF` 常量（SaveAs 与 ExportAsFixedFormat 共用） |
+| `ILLEGAL_CHARS` | 正则 `[\\/:*?"<>|]`，Windows 文件名非法字符 |
+| `DEFAULT_CONFIG` | 场景默认配置（见 §8） |
+| `HAVE_WORD` | 布尔；`import pythoncom / win32com.client` 成功才为 True，否则为 False |
+
+### 5.2 值/字段工具函数
+
+| 函数 | 作用 |
+|---|---|
+| `safe_str(x)` | `None → ""`，其余转字符串并去首尾空格 |
+| `normalize_value(v, date_format)` | 把 Excel 单元格值转成渲染字符串：`datetime/date` 按 `date_format` 格式化；`bool` → 是/否；`float` 整数去掉 `.0`（openpyxl 把整数读成 float）；其余转 str |
+| `normalize_number(x)` | 把「模板编号」归一化：`1`/`"1"`/`"01"`/`1.0`/`"模板1"` → `"1"`（先 `int(float(s))`，失败则正则抓数字） |
+| `sanitize_filename(name)` | 替换非法字符为 `_` |
+| `guess_template_number_column(headers)` | 猜「模板编号」列名：优先 `模板编号` → 含 `模板` → 含 `template` → 含 `编号` → 兜底 `"模板编号"` |
+
+### 5.3 Excel 读取
+
+| 函数 | 作用 |
+|---|---|
+| `read_excel(excel_path, sheet_name)` | 返回 `(headers, data, sheet标题)`。校验文件存在、非空、表头唯一（重复表头直接抛错，因为会互相覆盖）。`data` 为 `[{表头:值}, ...]`，跳过空行 |
+| `list_sheets(excel_path)` | 只读列出所有工作表名（用于 GUI 下拉框） |
+
+### 5.4 模板匹配
+
+| 函数 | 作用 |
+|---|---|
+| `build_template_map(template_dir)` | 扫描目录，建立 `{编号字符串: 文件名}` 映射。只认 `.docx`、跳过 `~$` 临时文件；文件名里抓数字作为编号；编号重复会抛错。返回 `(tmap, 全部docx文件列表)` |
+| `extract_template_variables(template_path)` | 用空 context 渲染一次，返回模板里所有 `{{变量}}` 集合（`get_undeclared_template_variables`）。失败返回 None（复杂模板，预览时跳过校验） |
+
+### 5.5 文件名生成
+
+| 函数 | 作用 |
+|---|---|
+| `resolve_filename(pattern, record, date_format)` | 用正则 `\{([^{}]+)\}` 把命名规则里的 `{字段名}` 替换为该行值，再 `sanitize_filename` |
+
+### 5.6 配置系统（场景）
+
+| 项 | 作用 |
+|---|---|
+| `class Config` | 一个「场景」。`__init__` 以 `DEFAULT_CONFIG` 为底、覆盖传入项；`to_dict` / `save` / `load` 负责 JSON 序列化 |
+| `get_config_dir()` | 返回 `configs` 目录：打包后（`sys.frozen`）在 **exe 同级**；开发时在脚本同级的 `configs/`。自动 `makedirs` |
+
+### 5.7 Word→PDF（本次修复重点）
+
+| 函数 | 作用 |
+|---|---|
+| `word_error_hint(e)` | 把 Word COM 报错（`命令失败`/`发生意外`/`-2146824090`/`-2147352567`）翻译成中文排查提示 |
+| `convert_to_pdf_batch(items, log)` | 用**一次** Word 会话把多个 docx 转成 PDF，返回成功 PDF 路径列表。详见 §6 |
+
+### 5.8 核心流程
+
+| 函数 | 作用 |
+|---|---|
+| `generate_all(cfg, log, progress)` | 完整生成流程（读 Excel → 匹配模板 → 校验 → 逐行渲染 → Word 转 PDF → 统计），返回 `{"ok","fail","warn","output"}`。详见 §7 |
+
+### 5.9 GUI
+
+| 项 | 作用 |
+|---|---|
+| `class App` | tkinter 主界面：场景栏、文件路径、选项、命名规则、按钮、进度条、日志区。用 `queue.Queue` + `root.after` 轮询实现**工作线程 → 主线程**的日志/进度回传 |
+| `_worker(cfg)` | 在 `threading.Thread` 里跑 `generate_all`，通过队列把日志/进度/完成事件发回主线程 |
+| `main()` | 创建 Tk、设置 DPI 感知、启动 `App` |
+
+---
+
+## 6. Word→PDF 转换细节（convert_to_pdf_batch）
+
+> 这是本项目最「脆弱」、最依赖外部环境的一段，务必理解。
+
+### 6.1 执行流程
+
+1. `pythoncom.CoInitialize()`（GUI 在工作线程调用，必须初始化 COM）；
+2. `win32com.client.DispatchEx("Word.Application")` —— 用 **DispatchEx**（而非 Dispatch）强制启动**独立** Word 进程，避免干扰用户已打开的 Word；
+3. `word.Visible = False`、`word.DisplayAlerts = 0`、`word.AutomationSecurity = 3`（禁宏弹窗，`msoAutomationSecurityForceDisable`）；
+4. 逐份处理：
+   - 生成**无空格临时名** `__tmp_pdf_{pid}_{idx}.pdf`；
+   - `word.Documents.Open(docx_path, ReadOnly=True)`；
+   - **优先** `doc.ExportAsFixedFormat(OutputFileName=tmp_pdf, ExportFormat=17)`；**失败退回** `doc.SaveAs(tmp_pdf, FileFormat=17)`（v1.0.1 新增）；
+   - `doc.Close(False)`；
+   - 校验临时 PDF 确实存在，`os.replace(tmp_pdf, pdf_path)` 改回最终名（含空格/中文）；
+5. `finally`：`word.Quit()` + `pythoncom.CoUninitialize()`，并清理残留临时 PDF。
+
+### 6.2 关键设计决策
+
+| 决策 | 原因 |
+|---|---|
+| **无空格临时名 + `os.replace` 改名** | Word 保存含空格文件名时可能把空格编码成 `%20`，所以先存 ASCII 临时名、再改名 |
+| **`ExportAsFixedFormat` 优先，`SaveAs` 兜底**（v1.0.1） | 部分 Office 365 用 `SaveAs(FileFormat=17)` 转 PDF 会报 `0x800A1066 命令失败`；`ExportAsFixedFormat` 走内置 PDF 引擎更稳 |
+| **`DispatchEx`** | 独立进程，不抢用户已开的 Word |
+| **`AutomationSecurity=3`** | 避免「安全警告：宏已被禁用」等模态弹窗卡死后台自动化 |
+| **`ReadOnly=True`** | 只读打开，避免意外修改 |
+| **单次会话批量转** | 复用同一个 Word 进程，避免 22 份就启动/关闭 22 次 Word |
+
+---
+
+## 7. 核心数据流（generate_all 完整流程）
+
+```
+generate_all(cfg)
+  │
+  ├─ 1. 校验：excel_file / template_dir / output_dir 非空；makedirs(output_dir)
+  ├─ 2. read_excel → headers, records, sheet
+  ├─ 3. build_template_map → tmap（编号→文件名）
+  ├─ 4. 校验「模板编号列」tcol 是否在 headers 里（不在则抛错）
+  ├─ 5. 校验命名规则里用到的 {字段} 都在 headers 里（缺则抛错）
+  ├─ 6. 逐行渲染：
+  │      tmp_dir = tempfile.mkdtemp("salary_tool_")
+  │      for idx, rec in enumerate(records):
+  │        tkey = normalize_number(rec[tcol])
+  │        tkey 不在 tmap → warn++（跳过该行）
+  │        DocxTemplate(tpl).render(context) → 存 tmp_docx（row_XXXX.docx）
+  │        失败 → fail++（跳过该行）
+  │        pdf_name = resolve_filename(pattern, rec, ...)
+  │        重名 → 追加 _2/_3…（warn++）
+  │        pdf_jobs.append((tmp_docx, output_dir/pdf_name.pdf))
+  ├─ 7. convert_to_pdf_batch(pdf_jobs) → ok_paths
+  ├─ 8. 统计 ok/fail/warn，打印汇总
+  └─ finally: 清理 tmp_dir 下所有临时 docx
+```
+
+- `fail` 只统计「填充失败 + 转 PDF 失败」的数量；`warn` 统计「跳过/重名/字段缺失提示」。
+- 渲染失败或转 PDF 失败的**单行不影响其余行**，最后统一汇总。
+
+---
+
+## 8. 配置系统（场景）
+
+### 8.1 默认配置 `DEFAULT_CONFIG`
+
+```python
+{
+    "name": "调薪信件",
+    "excel_file": "",
+    "template_dir": "",
+    "output_dir": "",
+    "sheet_name": "",
+    "template_number_column": "模板编号",
+    "filename_pattern": "{员工编号}_{员工姓名}_2026 salary review letter",
+    "date_format": "%Y-%m-%d",
+}
+```
+
+### 8.2 配置存储
+
+- 场景保存在 `configs/<场景名>.json`，字段即 `DEFAULT_CONFIG` 的键。
+- 开发机 `configs/` 下已有两个样例：`新场景.json`（指向 `sample_data.xlsx`，有效）、`外派人员调薪信.json`（指向**不存在的** `sample_data2.xlsx`，已过期）。
+
+### 8.3 ⚠️ 配置不可跨机移植
+
+配置里存的是**绝对路径**（如 `C:/Users/joanli/salary-letter-tool/...`），换机器就失效。因此：
+
+- **便携版 zip 刻意不打包 `configs/`**，同事首次使用从零配置；
+- 开发时如需在另一台机器复用场景，需手工改 JSON 里的路径。
+
+---
+
+## 9. 数据格式约定
+
+### 9.1 Excel 数据源
+
+- **第一行是表头**，表头**不能重复**（重复会抛错，因为字段会互相覆盖）。
+- 之后每行一名员工；**空行自动跳过**。
+- 值类型自动归一化（`normalize_value`）：日期按 `date_format`、浮点整数去 `.0`、布尔 → 是/否。
+- 必须有「模板编号」列（列名可自定义，见 `template_number_column`），且每行编号能匹配到模板文件，否则该行跳过。
+
+### 9.2 Word 模板
+
+- 后缀必须 **`.docx`**（`.doc` 会被忽略，见 §12）。
+- 文件名必须**带数字编号**（如 `模板1.docx`、`模板2.docx`），编号 `1`/`01`/`1.0`/`模板1` 视为同一编号。
+- 占位符写法 **`{{字段名}}`**，字段名与 Excel 表头**完全一致**。
+- ⚠️ 占位符必须在 Word 里**一次性连续输入**，中途换字体/格式可能把 `{{字段名}}` 拆成多段，导致识别失败（README 已强调）。
+
+### 9.3 PDF 命名规则
+
+- 用 **单花括号** `{字段名}` 引用 Excel 列（如 `{员工编号}_{员工姓名}_2026 salary review letter`）。
+- ⚠️ 注意：**命名规则用单花括号，模板占位符用双花括号**，两者不同、易混淆（详见 §12 坑 1）。
+- 生成的最终文件名会做非法字符清理；重名自动追加 `_2`、`_3`。
+
+---
+
+## 10. 打包与分发
+
+### 10.1 打包要点
+
+- `--onedir`（非 onefile）：产物是 `exe` + `_internal/`（含 Python 运行时、所有依赖、tkinter 资源）。
+- `--windowed`：无控制台窗口。
+- `--hidden-import win32timezone`：pywin32 在打包时需显式声明，否则运行期可能 `ImportError`。
+- `--version-file version_info.txt`：写入版本资源；**改版本号需同时改此文件里的 `filevers/prodvers` 与 `FileVersion/ProductVersion` 两处**。
+
+### 10.2 便携版组装（对外分发）
+
+`SalaryLetterTool_v1.0.0_便携版/` 目录内：
+
+| 子项 | 说明 |
+|---|---|
+| `SalaryLetterTool/` | app 本体 = `dist/SalaryLetterTool/` 拷贝（exe + `_internal/`）+ `使用说明.txt` + 空 `configs/` |
+| `2026外派调薪信_测试演示版本/`、`生成版本1.0/`、`生成版本2.0/` | 真实场景目录，各含 `2026调薪信模版/`（模板）、`数据源*.xlsx`、`输出pdf/`；另有历史 `.7z` 批次产物 |
+
+**但压缩成 zip 时只打包 `SalaryLetterTool/` 本体**（不含场景文件夹、不含 configs），见 §4.4。
+
+### 10.3 同事版使用说明
+
+放在 app 目录的 `使用说明.txt`（约 1.2KB，同事版，含「转 PDF 报错」排查），与根目录的 184 字节 `使用说明.txt`（开发备忘）不是同一个文件。
+
+---
+
+## 11. 已知问题与排查
+
+### 11.1 Word 转 PDF 报「命令失败 / 发生意外」/ 错误码 `-2146824090`、`-2147352567`
+
+这是**最常见的线上问题**（本次修复即为它），几乎全是**环境问题**而非代码逻辑：
+
+- `-2147352567` = `0x80020009` = DISP_E_EXCEPTION（COM 通用「发生异常」外层包装）；
+- `-2146824090` = `0x800A1066` = Word 的「命令失败」（Command failed），help context `36966` 对应 `wdmain11.chm` 的「另存为」命令。
+
+**判断**：日志里「逐行填充模板」成功、所有文档都卡在「Word 转 PDF」这一步 → 渲染（docxtpl）没问题，问题在 Word 侧。
+
+**常见原因（按概率）**：
+
+1. **Office 365 未登录/未激活** → Word 处于「功能受限模式」（能看不能存）。← 头号嫌疑。**必须**手动打开 Word 登录并激活，且「另存为 PDF」能成功。
+2. Word 首次启动的**登录/授权弹窗**卡住（工具是 `Visible=False` 后台调用，弹窗没人点）。
+3. **受保护的视图**：从网上下载的 zip 解压出的文件带「标记为来自网络」（Mark of the Web），Word 会拦。
+4. 旧代码 `SaveAs(FileFormat=17)` 在部分 365 上不稳（v1.0.1 已改用 `ExportAsFixedFormat`）。
+
+**处理步骤（给同事）**：
+
+1. 手动打开 Word，登录 Microsoft 365 账号并激活；随便「另存为 PDF」验证成功；
+2. 对 zip/文件夹 **右键 → 属性 → 勾选「解除锁定」** 再解压；
+3. 重新运行工具。
+
+**代码侧已做的加固（v1.0.1）**：`ExportAsFixedFormat` 优先 + `SaveAs` 兜底、`AutomationSecurity=3` 禁宏弹窗、失败时打印中文排查提示。
+
+### 11.2 其他常见问题
+
+| 现象 | 原因/解决 |
+|---|---|
+| 提示「无法启动 Microsoft Word」 | 未装 Word，或 pywin32 未装（开发机） |
+| PDF 字段为空 / 占位符没被替换 | 占位符名与表头不一致；或占位符被拆段（重输一遍） |
+| 提示「模板编号 X 没有对应模板」 | Excel 编号与模板文件名数字对不上 |
+| 模板「无法解析」 | 复杂模板，`extract_template_variables` 返回 None，预览时跳过校验（不阻断生成） |
+| 打包后 exe 大 | 正常，pywin32/lxml/numpy 体积大 |
+
+---
+
+## 12. 已识别的坑与不一致（维护必读）
+
+1. **命名规则单花括号 vs 模板占位符双花括号**：`resolve_filename` 用 `\{([^{}]+)\}`（单花括号）；模板用 `{{字段名}}`（docxtpl 语法，双花括号）。`configs/外派人员调薪信.json` 里存的命名规则用了**双花括号**，属于错误示例（会渲染成带字面大括号的 `{值}`）。命名规则应统一单花括号。
+2. **只支持 `.docx`**：`build_template_map` 只认 `.docx`。真实场景目录里同时存在英文源模板 `.doc`（如 `1 CTGHQ Template …CLEAN.doc`）和转换后的 `模板N.docx`；`.doc` 会被静默忽略。给模板时必须先转 `.docx` 并改成带编号的文件名。
+3. **configs 存绝对路径**：换机器/挪目录即失效（见 §8.3）。
+4. **config 会过期**：`外派人员调薪信.json` 指向已删除的 `sample_data2.xlsx`，属历史遗留。
+5. **Word 是唯一外部运行时依赖**：无 Word = 无 PDF。无法用纯 Python 替代（当前实现）。
+6. **`SalaryLetterTool.spec` 与实际打包不一致**：`build_exe.bat` 用的是命令行 `--onedir` 参数，spec 文件是早期产物、未作为主打包入口维护。改打包以 `build_exe.bat` 为准。
+7. **版本号散落多处**：`version_info.txt`（exe 资源）、便携版 `使用说明.txt`（`版本：1.0.x`）、`推广介绍.md`（写死 `v1.0.0`）。升版本时需逐一核对（本次 `推广介绍.md` 未同步，见 §14）。
+
+---
+
+## 13. 版本历史 / 变更记录
+
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| 1.0.0 | 2026-08-25 | 初始版本：完整 GUI + Excel/模板渲染 + Word COM 转 PDF + 场景系统 + PyInstaller 打包 |
+| 1.0.1 | 2026-09-08 | 修复 Word 转 PDF 在 Office 365 上「命令失败」（`0x800A1066`）：`ExportAsFixedFormat` 优先 + `SaveAs` 兜底；新增 `AutomationSecurity=3` 禁宏弹窗；新增 `word_error_hint` 中文报错提示；README/使用说明补排查条目；版本资源 1.0.0→1.0.1；重新打包并压缩便携版 zip |
+
+> 维护本文时，请在版本号变更时同步更新：本表格、顶部「当前版本」、`version_info.txt`、便携版 `使用说明.txt` 的版本行。
+
+---
+
+## 14. 后续迭代建议（可选，供规划）
+
+1. **去掉 Word 依赖的降级方案**：考虑用 LibreOffice headless（`soffice --convert-to pdf`）作为无 Word 环境的兜底，或引入纯 Python PDF 渲染（但会牺牲 Word 版式保真度）。
+2. **受保护视图/解除锁定自动化**：程序内尝试清除目标文件的 Zone.Identifier（Mark of the Web），减少同事手动「解除锁定」。
+3. **导出前批量自检**：在 `convert_to_pdf_batch` 前增加一次「试用 Word 打开+另存」的环境探测，失败时给出更精准的环境诊断（区分「未激活」与「路径问题」）。
+4. **配置改相对路径/可移植**：场景 JSON 支持相对 exe 的路径，便于整套便携版连同场景一起分发。
+5. **模板编号列自动识别**：已实现 `guess_template_number_column`，但仅在选择 Excel 时提示；可扩展到预览校验时给出更醒目的匹配结果。
+6. **i18n / 文案集中管理**：目前中文文案散落在代码里，可抽到统一常量或资源文件。
+
+---
+
+## 附：关键代码索引（salary_tool.py，行号对应 1.0.1）
+
+| 行号 | 符号 | 说明 |
+|---|---|---|
+| 43 | `WD_FORMAT_PDF` | PDF 格式常量 |
+| 46 | `DEFAULT_CONFIG` | 场景默认配置 |
+| 61 | `safe_str` | 空值/去空格 |
+| 66 | `normalize_value` | Excel 值 → 字符串 |
+| 84 | `normalize_number` | 模板编号归一化 |
+| 99 | `guess_template_number_column` | 猜模板编号列 |
+| 119 | `read_excel` | 读 Excel |
+| 155 | `list_sheets` | 列工作表名 |
+| 164 | `build_template_map` | 建模板映射 |
+| 194 | `extract_template_variables` | 解析模板占位符 |
+| 207 | `resolve_filename` | 生成 PDF 文件名 |
+| 220 | `Config` | 场景配置类 |
+| 241 | `get_config_dir` | configs 目录 |
+| 252 | `word_error_hint` | 报错中文提示 |
+| 265 | `convert_to_pdf_batch` | Word 转 PDF |
+| 340 | `generate_all` | 核心生成流程 |
+| 475 | `App` | GUI |
+| 840 | `main` | 入口 |
